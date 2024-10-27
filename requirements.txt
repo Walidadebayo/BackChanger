@@ -1,0 +1,4 @@
+gradio
+rembg
+Pillow>=9.2.0
+flask

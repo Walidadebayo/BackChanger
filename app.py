@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from rembg import remove
-from PIL import Image, ImageSequence, ExifTags, ImageFile
+from PIL import Image, ImageSequence, ExifTags
 import base64
 import io
 import re
@@ -101,12 +101,7 @@ def remove_bg():
 def apply_bg():
     try:
         data = request.get_json()
-        print(data)
-        # save base64 string to txt file
-        with open('data.txt', 'w') as f:
-            f.write(data["image"])
-            
-
+        
         # Function to add padding to base64 strings
         def add_padding(base64_string):
             return base64_string + "=" * (-len(base64_string) % 4)

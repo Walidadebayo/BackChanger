@@ -10,6 +10,7 @@ app = Flask(__name__)
 # Maximum image size
 Image.MAX_IMAGE_PIXELS = None
 
+
 # Function to apply background to an image
 def apply_background(image, background):
     if background.mode != "RGBA":
@@ -18,17 +19,23 @@ def apply_background(image, background):
     combined = Image.alpha_composite(background, image)
     return combined
 
+
 # Function to convert hex color to RGBA
 def hex_to_rgba(hex_color):
     hex_color = hex_color.lstrip("#")
     lv = len(hex_color)
-    return tuple(int(hex_color[i : i + lv // 3], 16) for i in range(0, lv, lv // 3)) + (255,)
+    return tuple(int(hex_color[i : i + lv // 3], 16) for i in range(0, lv, lv // 3)) + (
+        255,
+    )
+
 
 @app.route("/")
 def hello_world():
     return "Hi, Welcome to VizXpress"
 
+
 # Endpoint to remove background from an image
+
 
 @app.route("/remove-bg", methods=["POST"])
 def remove_bg():
@@ -36,15 +43,13 @@ def remove_bg():
         data = request.get_json()
         image_data = base64.b64decode(data["image"])
         input_image = Image.open(io.BytesIO(image_data))
-
-        print(f"Original Image format: {input_image.format}")
-        print(f"Original Image size: {input_image.size}")
-        print(f"Original Image mode: {input_image.mode}")
+        # Preserve color profile
+        color_profile = input_image.info.get("icc_profile")
 
         # Correct orientation based on EXIF data
         try:
             for orientation in ExifTags.TAGS.keys():
-                if ExifTags.TAGS[orientation] == 'Orientation':
+                if ExifTags.TAGS[orientation] == "Orientation":
                     break
             exif = dict(input_image._getexif().items())
             if exif[orientation] == 3:
@@ -59,10 +64,10 @@ def remove_bg():
 
         # Strip metadata by saving and reopening the image
         buffer = io.BytesIO()
-        input_image.save(buffer, format="PNG")
+        input_image.save(buffer, format="PNG", optimize=True, icc_profile=color_profile)
         buffer.seek(0)
         input_image = Image.open(buffer)
-        
+
         if input_image.format == "GIF":
             frames = []
             for frame in ImageSequence.Iterator(input_image):
@@ -70,7 +75,14 @@ def remove_bg():
                 try:
                     output_frame = remove(frame)
                 except ZeroDivisionError:
-                    return jsonify({"error": "Division by zero occurred while processing the image."}), 500
+                    return (
+                        jsonify(
+                            {
+                                "error": "Division by zero occurred while processing the image."
+                            }
+                        ),
+                        500,
+                    )
                 frames.append(output_frame)
 
             output_image = io.BytesIO()
@@ -80,34 +92,51 @@ def remove_bg():
                 save_all=True,
                 append_images=frames[1:],
                 loop=0,
+                optimize=True,
+                icc_profile=color_profile,  # Preserve color profile
             )
-            output_image_base64 = base64.b64encode(output_image.getvalue()).decode("utf-8")
+            output_image_base64 = base64.b64encode(output_image.getvalue()).decode(
+                "utf-8"
+            )
             return jsonify({"image": output_image_base64})
         else:
             try:
                 output_image = remove(input_image)
             except ZeroDivisionError:
-                return jsonify({"error": "Division by zero occurred while processing the image."}), 500
+                return (
+                    jsonify(
+                        {
+                            "error": "Division by zero occurred while processing the image."
+                        }
+                    ),
+                    500,
+                )
             buffered = io.BytesIO()
-            output_image.save(buffered, format="PNG")
+            output_image.save(
+                buffered, format="PNG", optimize=True, icc_profile=color_profile
+            )  # Preserve color profile
             output_image_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
             return jsonify({"image": output_image_base64})
     except Exception as e:
         print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
+
 # Endpoint to apply background to an image
 @app.route("/apply-bg", methods=["POST"])
 def apply_bg():
     try:
         data = request.get_json()
-        
+
         # Function to add padding to base64 strings
         def add_padding(base64_string):
             return base64_string + "=" * (-len(base64_string) % 4)
 
         image_data = base64.b64decode(add_padding(data["image"]))
         input_image = Image.open(io.BytesIO(image_data))
+
+        # Preserve color profile
+        color_profile = input_image.info.get("icc_profile")
 
         background_data = data.get("background")
 
@@ -147,18 +176,21 @@ def apply_bg():
                 append_images=frames[1:],
                 loop=0,
             )
-            output_image_base64 = base64.b64encode(output_image.getvalue()).decode("utf-8")
+            output_image_base64 = base64.b64encode(output_image.getvalue()).decode(
+                "utf-8"
+            )
             return jsonify({"image": output_image_base64})
         else:
             output_image = apply_background(input_image, background_image)
             buffered = io.BytesIO()
-            output_image.save(buffered, format="PNG")
+            output_image.save(
+                buffered, format="PNG", optimize=True, icc_profile=color_profile
+            )  # Preserve color profile
             output_image_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
             return jsonify({"image": output_image_base64})
     except Exception as e:
         print(e)
         return jsonify({"error": str(e)}), 500
-
 
 
 if __name__ == "__main__":

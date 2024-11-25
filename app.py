@@ -52,6 +52,8 @@ def add_cors_headers(response):
 
 @app.route("/remove-bg-video", methods=["POST"])
 def remove_bg_video():
+    temp_video_path = None
+    temp_output_path = None
     try:
         data = request.get_json()
         video_data = base64.b64decode(data["video"])
@@ -105,9 +107,9 @@ def remove_bg_video():
         return jsonify({"error": str(e)}), 500
     finally:
         # Ensure temporary files are removed in case of an error
-        if os.path.exists(temp_video_path):
+        if temp_video_path and os.path.exists(temp_video_path):
             os.remove(temp_video_path)
-        if os.path.exists(temp_output_path):
+        if temp_output_path and os.path.exists(temp_output_path):
             os.remove(temp_output_path)
 
 # Endpoint to remove background from an image
@@ -268,4 +270,5 @@ def apply_bg():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

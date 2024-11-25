@@ -5,3 +5,5 @@ flask-cors
 moviepy
 onnxruntime
 gunicorn
+celery
+redis

@@ -11,13 +11,11 @@ import tempfile
 from moviepy import VideoFileClip, ImageSequenceClip, concatenate_videoclips, CompositeVideoClip
 import os
 
-
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Maximum image size
 Image.MAX_IMAGE_PIXELS = None
-
 
 # Function to apply background to an image
 def apply_background(image, background):
@@ -27,7 +25,6 @@ def apply_background(image, background):
     combined = Image.alpha_composite(background, image)
     return combined
 
-
 # Function to convert hex color to RGBA
 def hex_to_rgba(hex_color):
     hex_color = hex_color.lstrip("#")
@@ -35,7 +32,6 @@ def hex_to_rgba(hex_color):
     return tuple(int(hex_color[i : i + lv // 3], 16) for i in range(0, lv, lv // 3)) + (
         255,
     )
-
 
 @app.route("/")
 def hello_world():
@@ -48,10 +44,11 @@ def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
     return response
 
-
-
 @app.route("/remove-bg-video", methods=["POST"])
 def remove_bg_video():
+    if request.content_type != 'application/json':
+        return jsonify({"error": "Content-Type must be application/json"}), 415
+
     temp_video_path = None
     temp_output_path = None
     try:
@@ -82,9 +79,15 @@ def remove_bg_video():
         # Create a new video clip with the processed frames
         output_clip = ImageSequenceClip(processed_frames, fps=fps)
 
+        # Determine the codec based on the file extension
+        if file_extension == 'webm':
+            codec = 'libvpx-vp9'
+        else:
+            codec = 'libx264'
+
         # Save the output video to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
-            output_clip.write_videofile(temp_output_file.name, codec='libx264', audio_codec='aac')
+            output_clip.write_videofile(temp_output_file.name, codec=codec, audio_codec='aac')
             temp_output_path = temp_output_file.name
 
         # Read the output video into a BytesIO object
@@ -197,7 +200,6 @@ def remove_bg():
         print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
-
 # Endpoint to apply background to an image
 @app.route("/apply-bg", methods=["POST"])
 def apply_bg():
@@ -267,7 +269,6 @@ def apply_bg():
     except Exception as e:
         print(e)
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

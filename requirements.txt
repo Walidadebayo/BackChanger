@@ -1,5 +1,6 @@
 Flask
 rembg
 Pillow>=9.2.0
-imageio
 flask-cors
+moviepy
+onnxruntime

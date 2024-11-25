@@ -5,6 +5,12 @@ import base64
 import io
 import re
 from flask_cors import CORS
+import cv2
+import numpy as np
+import tempfile
+from moviepy import VideoFileClip, ImageSequenceClip, concatenate_videoclips, CompositeVideoClip
+import os
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -42,6 +48,67 @@ def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
     return response
 
+
+
+@app.route("/remove-bg-video", methods=["POST"])
+def remove_bg_video():
+    try:
+        data = request.get_json()
+        video_data = base64.b64decode(data["video"])
+        file_extension = data.get('extension', 'mp4')
+
+        # Save video data to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_video_file:
+            temp_video_file.write(video_data)
+            temp_video_path = temp_video_file.name
+
+        # Load video using moviepy
+        video_clip = VideoFileClip(temp_video_path)
+        fps = video_clip.fps
+
+        # Process each frame to remove background
+        def process_frame(frame):
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(frame_rgb)
+            output_image = remove(pil_image)
+            output_frame = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGBA2BGR)
+            print("Processed frame")
+            return output_frame
+
+        processed_frames = [process_frame(frame) for frame in video_clip.iter_frames()]
+
+        # Create a new video clip with the processed frames
+        output_clip = ImageSequenceClip(processed_frames, fps=fps)
+
+        # Save the output video to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
+            output_clip.write_videofile(temp_output_file.name, codec='libx264', audio_codec='aac')
+            temp_output_path = temp_output_file.name
+
+        # Read the output video into a BytesIO object
+        output_video_file = io.BytesIO()
+        with open(temp_output_path, 'rb') as f:
+            output_video_file.write(f.read())
+        output_video_file.seek(0)
+
+        # Remove the temporary files
+        os.remove(temp_video_path)
+        os.remove(temp_output_path)
+
+        # Encode the output video to base64
+        output_video_base64 = base64.b64encode(output_video_file.read()).decode('utf-8')
+
+        # Return the base64 encoded video
+        return jsonify({"video": output_video_base64}), 200
+    except Exception as e:
+        print("Error:", str(e))
+        return jsonify({"error": str(e)}), 500
+    finally:
+        # Ensure temporary files are removed in case of an error
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
 
 # Endpoint to remove background from an image
 @app.route("/remove-bg", methods=["POST"])

@@ -67,6 +67,11 @@ def remove_bg_video():
         video_data = base64.b64decode(data["video"])
         file_extension = data.get('extension', 'mp4')
 
+        # Check video file size
+        max_file_size = 60 * 1024 * 1024  # 60 MB
+        if len(video_data) > max_file_size:
+            return jsonify({"message": "Video file size exceeds the allowed limit. 😢"}), 400
+
         # Save video data to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_video_file:
             temp_video_file.write(video_data)
@@ -81,10 +86,10 @@ def remove_bg_video():
         max_duration = 60  # 1 minute
 
         if video_clip.size[0] > max_resolution[0] or video_clip.size[1] > max_resolution[1]:
-            return jsonify({"error": "Video resolution exceeds the allowed limit. 😢"}), 400
+            return jsonify({"message": "Video resolution exceeds the allowed limit. 😢"}), 400
 
         if video_clip.duration > max_duration:
-            return jsonify({"error": "Video duration exceeds the allowed limit. 😢"}), 400
+            return jsonify({"message": "Video duration exceeds the allowed limit. 😢"}), 400
 
         # Calculate number of frames in the video
         num_frames = int(video_clip.duration * fps)
@@ -140,7 +145,7 @@ def remove_bg_video():
         return jsonify({"video": output_video_base64}), 200
     except Exception as e:
         print("Error:", str(e))
-        return jsonify({"error": "Failed to process video. 😢"}), 500
+        return jsonify({"message": "Failed to process video. 😢"}), 500
     finally:
         # Ensure temporary files are removed in case of an error
         if temp_video_path and os.path.exists(temp_video_path):

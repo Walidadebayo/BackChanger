@@ -44,7 +44,7 @@ def hex_to_rgba(hex_color):
 
 @app.route("/")
 def hello_world():
-    return "Hi, Welcome to VizXpress"
+    return "Hello, Welcome to VizXpress"
 
 
 @app.after_request
@@ -61,7 +61,7 @@ def remove_bg_video():
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
     temp_video_path = None
-    temp_output_path = None
+    temp_output_paths = []
     try:
         data = request.get_json()
         video_data = base64.b64decode(data["video"])
@@ -70,7 +70,7 @@ def remove_bg_video():
         # Check video file size
         max_file_size = 60 * 1024 * 1024  # 60 MB
         if len(video_data) > max_file_size:
-            return jsonify({"message": "Video file size exceeds the allowed limit. 😢"}), 400
+            return jsonify({"error": "Video file size exceeds the allowed limit. 😢"}), 400
 
         # Save video data to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_video_file:
@@ -86,10 +86,10 @@ def remove_bg_video():
         max_duration = 60  # 1 minute
 
         if video_clip.size[0] > max_resolution[0] or video_clip.size[1] > max_resolution[1]:
-            return jsonify({"message": "Video resolution exceeds the allowed limit. 😢"}), 400
+            return jsonify({"error": "Video resolution exceeds the allowed limit. 😢"}), 400
 
         if video_clip.duration > max_duration:
-            return jsonify({"message": "Video duration exceeds the allowed limit. 😢"}), 400
+            return jsonify({"error": "Video duration exceeds the allowed limit. 😢"}), 400
 
         # Calculate number of frames in the video
         num_frames = int(video_clip.duration * fps)
@@ -103,40 +103,75 @@ def remove_bg_video():
             output_frame = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGBA2BGR)
             return output_frame
 
-        all_processed_frames = []
-        for frame in video_clip.iter_frames():
+        batch_size = 5  # Adjust batch size based on memory constraints
+        processed_frames = []
+        for i, frame in enumerate(video_clip.iter_frames()):
             try:
-                all_processed_frames.append(process_frame(frame))
+                processed_frame = process_frame(frame)
+                processed_frames.append(processed_frame)
             except Exception as e:
                 print(f"Warning: Skipping frame due to error: {e}")
-                all_processed_frames.append(frame)
+                processed_frames.append(frame)
 
-        # Create a new video clip with all the processed frames
-        output_clip = ImageSequenceClip(all_processed_frames, fps=fps)
+            # Process and release frames in batches
+            if (i + 1) % batch_size == 0 or (i + 1) == num_frames:
+                # Create a new video clip with the processed frames
+                output_clip = ImageSequenceClip(processed_frames, fps=fps)
 
-        # Determine the codec based on the file extension
-        if file_extension == 'webm':
-            codec = 'libvpx-vp9'
-        else:
-            codec = 'libx264'
+                # Determine the codec based on the file extension
+                if file_extension == 'webm':
+                    codec = 'libvpx-vp9'
+                else:
+                    codec = 'libx264'
 
-        # Save the output video to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
-            output_clip.write_videofile(temp_output_file.name, codec=codec, audio_codec='aac')
-            temp_output_path = temp_output_file.name
+                # Save the output video to a temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
+                    output_clip.write_videofile(temp_output_file.name, codec=codec, audio_codec='aac')
+                    temp_output_paths.append(temp_output_file.name)
 
-        # Read the output video into a BytesIO object
+                # Clear processed frames to release memory
+                processed_frames.clear()
+
+        # Concatenate all the temporary video files
+        clips = [VideoFileClip(path) for path in temp_output_paths]
+        final_clip = concatenate_videoclips(clips)
+
+        # Save the final output video to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as final_output_file:
+            final_clip.write_videofile(final_output_file.name, codec=codec, audio_codec='aac')
+            final_output_path = final_output_file.name
+
+        # Read the final output video into a BytesIO object
         output_video_file = io.BytesIO()
-        with open(temp_output_path, 'rb') as f:
+        with open(final_output_path, 'rb') as f:
             output_video_file.write(f.read())
         output_video_file.seek(0)
 
         # Remove the temporary files
-        video_clip.reader.close()
-        if video_clip.audio:
+        if video_clip.reader:
+            video_clip.reader.close()
+        if video_clip.audio and video_clip.audio.reader:
             video_clip.audio.reader.close()
-        os.remove(temp_video_path)
-        os.remove(temp_output_path)
+        try:
+            os.remove(temp_video_path)
+        except PermissionError:
+            print(f"PermissionError: Could not remove {temp_video_path}")
+            
+        for path in temp_output_paths:
+            clip = VideoFileClip(path)
+            if clip.reader:
+                clip.reader.close()
+            if clip.audio and clip.audio.reader:
+                clip.audio.reader.close()
+            clip.close()
+            try:
+                os.remove(path)
+            except PermissionError:
+                print(f"PermissionError: Could not remove {path}")
+        try:
+            os.remove(final_output_path)
+        except PermissionError:
+            print(f"PermissionError: Could not remove {final_output_path}")
 
         # Encode the output video to base64
         output_video_base64 = base64.b64encode(output_video_file.read()).decode('utf-8')
@@ -145,18 +180,42 @@ def remove_bg_video():
         return jsonify({"video": output_video_base64}), 200
     except Exception as e:
         print("Error:", str(e))
-        return jsonify({"message": "Failed to process video. 😢"}), 500
+        return jsonify({"error": "Failed to process video. 😢"}), 500
     finally:
         # Ensure temporary files are removed in case of an error
         if temp_video_path and os.path.exists(temp_video_path):
-            os.remove(temp_video_path)
-        if temp_output_path and os.path.exists(temp_output_path):
-            os.remove(temp_output_path)
+            try:
+                if video_clip.reader:
+                    video_clip.reader.close()
+                if video_clip.audio and video_clip.audio.reader:
+                    video_clip.audio.reader.close()
+            except Exception as e:
+                print(f"Error closing video clip: {e}")
+            try:
+                os.remove(temp_video_path)
+            except PermissionError:
+                print(f"PermissionError: Could not remove {temp_video_path}")
+        for path in temp_output_paths:
+            if os.path.exists(path):
+                try:
+                    clip = VideoFileClip(path)
+                    if clip.reader:
+                        clip.reader.close()
+                    if clip.audio and clip.audio.reader:
+                        clip.audio.reader.close()
+                    clip.close()
+                except Exception as e:
+                    print(f"Error closing clip: {e}")
+                try:
+                    os.remove(path)
+                except PermissionError:
+                    print(f"PermissionError: Could not remove {path}")
 
 
 # Endpoint to remove background from an image
 @app.route("/remove-bg", methods=["POST"])
 def remove_bg():
+
     try:
         data = request.get_json()
         image_data = base64.b64decode(data["image"])

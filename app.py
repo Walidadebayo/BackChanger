@@ -57,7 +57,7 @@ def add_cors_headers(response):
 
 @app.route("/remove-bg-video", methods=["POST"])
 def remove_bg_video():
-    if request.content_type != "application/json":
+    if request.content_type != 'application/json':
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
     temp_video_path = None
@@ -65,18 +65,26 @@ def remove_bg_video():
     try:
         data = request.get_json()
         video_data = base64.b64decode(data["video"])
-        file_extension = data.get("extension", "mp4")
+        file_extension = data.get('extension', 'mp4')
 
         # Save video data to a temporary file
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=f".{file_extension}"
-        ) as temp_video_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_video_file:
             temp_video_file.write(video_data)
             temp_video_path = temp_video_file.name
 
         # Load video using moviepy
         video_clip = VideoFileClip(temp_video_path)
         fps = video_clip.fps
+
+        # Limit video resolution and length
+        max_resolution = (1280, 720)  # 720p resolution
+        max_duration = 60  # 1 minute
+
+        if video_clip.size[0] > max_resolution[0] or video_clip.size[1] > max_resolution[1]:
+            return jsonify({"error": "Video resolution exceeds the allowed limit. 😢"}), 400
+
+        if video_clip.duration > max_duration:
+            return jsonify({"error": "Video duration exceeds the allowed limit. 😢"}), 400
 
         # Calculate number of frames in the video
         num_frames = int(video_clip.duration * fps)
@@ -90,36 +98,31 @@ def remove_bg_video():
             output_frame = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGBA2BGR)
             return output_frame
 
-        processed_frames = []
+        all_processed_frames = []
         for frame in video_clip.iter_frames():
             try:
-                processed_frame = process_frame(frame)
-                processed_frames.append(processed_frame)
+                all_processed_frames.append(process_frame(frame))
             except Exception as e:
                 print(f"Warning: Skipping frame due to error: {e}")
-                processed_frames.append(frame)
+                all_processed_frames.append(frame)
 
-        # Create a new video clip with the processed frames
-        output_clip = ImageSequenceClip(processed_frames, fps=fps)
+        # Create a new video clip with all the processed frames
+        output_clip = ImageSequenceClip(all_processed_frames, fps=fps)
 
         # Determine the codec based on the file extension
-        if file_extension == "webm":
-            codec = "libvpx-vp9"
+        if file_extension == 'webm':
+            codec = 'libvpx-vp9'
         else:
-            codec = "libx264"
+            codec = 'libx264'
 
         # Save the output video to a temporary file
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=f".{file_extension}"
-        ) as temp_output_file:
-            output_clip.write_videofile(
-                temp_output_file.name, codec=codec, audio_codec="aac"
-            )
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
+            output_clip.write_videofile(temp_output_file.name, codec=codec, audio_codec='aac')
             temp_output_path = temp_output_file.name
 
         # Read the output video into a BytesIO object
         output_video_file = io.BytesIO()
-        with open(temp_output_path, "rb") as f:
+        with open(temp_output_path, 'rb') as f:
             output_video_file.write(f.read())
         output_video_file.seek(0)
 
@@ -131,13 +134,13 @@ def remove_bg_video():
         os.remove(temp_output_path)
 
         # Encode the output video to base64
-        output_video_base64 = base64.b64encode(output_video_file.read()).decode("utf-8")
+        output_video_base64 = base64.b64encode(output_video_file.read()).decode('utf-8')
 
         # Return the base64 encoded video
         return jsonify({"video": output_video_base64}), 200
     except Exception as e:
         print("Error:", str(e))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to process video. 😢"}), 500
     finally:
         # Ensure temporary files are removed in case of an error
         if temp_video_path and os.path.exists(temp_video_path):

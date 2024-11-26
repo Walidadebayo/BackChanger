@@ -8,14 +8,21 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 import tempfile
-from moviepy import VideoFileClip, ImageSequenceClip, concatenate_videoclips, CompositeVideoClip
+from moviepy import (
+    VideoFileClip,
+    ImageSequenceClip,
+    concatenate_videoclips,
+    CompositeVideoClip,
+)
 import os
+import warnings
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Maximum image size
 Image.MAX_IMAGE_PIXELS = None
+
 
 # Function to apply background to an image
 def apply_background(image, background):
@@ -25,6 +32,7 @@ def apply_background(image, background):
     combined = Image.alpha_composite(background, image)
     return combined
 
+
 # Function to convert hex color to RGBA
 def hex_to_rgba(hex_color):
     hex_color = hex_color.lstrip("#")
@@ -33,9 +41,11 @@ def hex_to_rgba(hex_color):
         255,
     )
 
+
 @app.route("/")
 def hello_world():
     return "Hi, Welcome to VizXpress"
+
 
 @app.after_request
 def add_cors_headers(response):
@@ -44,9 +54,10 @@ def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
     return response
 
+
 @app.route("/remove-bg-video", methods=["POST"])
 def remove_bg_video():
-    if request.content_type != 'application/json':
+    if request.content_type != "application/json":
         return jsonify({"error": "Content-Type must be application/json"}), 415
 
     temp_video_path = None
@@ -54,10 +65,12 @@ def remove_bg_video():
     try:
         data = request.get_json()
         video_data = base64.b64decode(data["video"])
-        file_extension = data.get('extension', 'mp4')
+        file_extension = data.get("extension", "mp4")
 
         # Save video data to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_video_file:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=f".{file_extension}"
+        ) as temp_video_file:
             temp_video_file.write(video_data)
             temp_video_path = temp_video_file.name
 
@@ -65,43 +78,60 @@ def remove_bg_video():
         video_clip = VideoFileClip(temp_video_path)
         fps = video_clip.fps
 
+        # Calculate number of frames in the video
+        num_frames = int(video_clip.duration * fps)
+        print(f"Number of frames in the video: {num_frames}")
+
         # Process each frame to remove background
         def process_frame(frame):
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(frame_rgb)
             output_image = remove(pil_image)
             output_frame = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGBA2BGR)
-            print("Processed frame")
             return output_frame
 
-        processed_frames = [process_frame(frame) for frame in video_clip.iter_frames()]
+        processed_frames = []
+        for frame in video_clip.iter_frames():
+            try:
+                processed_frame = process_frame(frame)
+                processed_frames.append(processed_frame)
+            except Exception as e:
+                print(f"Warning: Skipping frame due to error: {e}")
+                processed_frames.append(frame)
 
         # Create a new video clip with the processed frames
         output_clip = ImageSequenceClip(processed_frames, fps=fps)
 
         # Determine the codec based on the file extension
-        if file_extension == 'webm':
-            codec = 'libvpx-vp9'
+        if file_extension == "webm":
+            codec = "libvpx-vp9"
         else:
-            codec = 'libx264'
+            codec = "libx264"
 
         # Save the output video to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
-            output_clip.write_videofile(temp_output_file.name, codec=codec, audio_codec='aac')
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=f".{file_extension}"
+        ) as temp_output_file:
+            output_clip.write_videofile(
+                temp_output_file.name, codec=codec, audio_codec="aac"
+            )
             temp_output_path = temp_output_file.name
 
         # Read the output video into a BytesIO object
         output_video_file = io.BytesIO()
-        with open(temp_output_path, 'rb') as f:
+        with open(temp_output_path, "rb") as f:
             output_video_file.write(f.read())
         output_video_file.seek(0)
 
         # Remove the temporary files
+        video_clip.reader.close()
+        if video_clip.audio:
+            video_clip.audio.reader.close()
         os.remove(temp_video_path)
         os.remove(temp_output_path)
 
         # Encode the output video to base64
-        output_video_base64 = base64.b64encode(output_video_file.read()).decode('utf-8')
+        output_video_base64 = base64.b64encode(output_video_file.read()).decode("utf-8")
 
         # Return the base64 encoded video
         return jsonify({"video": output_video_base64}), 200
@@ -114,6 +144,7 @@ def remove_bg_video():
             os.remove(temp_video_path)
         if temp_output_path and os.path.exists(temp_output_path):
             os.remove(temp_output_path)
+
 
 # Endpoint to remove background from an image
 @app.route("/remove-bg", methods=["POST"])
@@ -200,6 +231,7 @@ def remove_bg():
         print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
+
 # Endpoint to apply background to an image
 @app.route("/apply-bg", methods=["POST"])
 def apply_bg():
@@ -269,6 +301,7 @@ def apply_bg():
     except Exception as e:
         print(e)
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

@@ -8,14 +8,19 @@ from flask_cors import CORS
 import cv2
 import numpy as np
 import tempfile
-from moviepy import (
+from moviepy.editor import (
     VideoFileClip,
     ImageSequenceClip,
     concatenate_videoclips,
-    CompositeVideoClip,
+    vfx,
 )
+from transformers import AutoModelForImageSegmentation
+import torch
+from torchvision import transforms
+import time
 import os
-import warnings
+from concurrent.futures import ThreadPoolExecutor
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -23,6 +28,24 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # Maximum image size
 Image.MAX_IMAGE_PIXELS = None
 
+torch.set_float32_matmul_precision("high")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+birefnet = AutoModelForImageSegmentation.from_pretrained(
+    "ZhengPeng7/BiRefNet", trust_remote_code=True
+)
+birefnet.to(device)
+birefnet_lite = AutoModelForImageSegmentation.from_pretrained(
+    "ZhengPeng7/BiRefNet_lite", trust_remote_code=True
+)
+birefnet_lite.to(device)
+
+transform_image = transforms.Compose(
+    [
+        transforms.Resize((1024, 1024)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ]
+)
 
 # Function to apply background to an image
 def apply_background(image, background):
@@ -44,7 +67,7 @@ def hex_to_rgba(hex_color):
 
 @app.route("/")
 def hello_world():
-    return "Hello, Welcome to VizXpress"
+    return "Hi, Welcome to VizXpress"
 
 
 @app.after_request
@@ -55,6 +78,25 @@ def add_cors_headers(response):
     return response
 
 
+def process_frame(frame, bg_type, bg, fast_mode, bg_frame_index, background_frames, color):
+    try:
+        pil_image = Image.fromarray(frame)
+        if bg_type == "Color":
+            processed_image = process_video_frame(pil_image, color, fast_mode)
+        elif bg_type == "Image":
+            processed_image = process_video_frame(pil_image, bg, fast_mode)
+        elif bg_type == "Video":
+            background_frame = background_frames[bg_frame_index]  # Access the correct background frame
+            bg_frame_index += 1
+            background_image = Image.fromarray(background_frame)
+            processed_image = process_video_frame(pil_image, background_image, fast_mode)
+        else:
+            processed_image = process_video_frame(pil_image, fast_mode)
+        return cv2.cvtColor(np.array(processed_image), cv2.COLOR_RGBA2BGR)
+    except Exception as e:
+        print("Error:", str(e))
+        return frame, bg_frame_index
+
 @app.route("/remove-bg-video", methods=["POST"])
 def remove_bg_video():
     if request.content_type != 'application/json':
@@ -63,160 +105,111 @@ def remove_bg_video():
     temp_video_path = None
     temp_output_paths = []
     try:
+        start_time = time.time()
         data = request.get_json()
         video_data = base64.b64decode(data["video"])
-        file_extension = data.get('extension', 'mp4')
+        bg_type = data.get('bg_type', None)
+        bg_color = data.get('bg_color', None)
+        bg_video = data.get('bg_video', None)
+        bg_image = data.get('bg_image', None)
 
         # Check video file size
         max_file_size = 60 * 1024 * 1024  # 60 MB
         if len(video_data) > max_file_size:
             return jsonify({"error": "Video file size exceeds the allowed limit. 😢"}), 400
+        
+        
 
         # Save video data to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_video_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.mp4') as temp_video_file:
             temp_video_file.write(video_data)
             temp_video_path = temp_video_file.name
 
         # Load video using moviepy
-        video_clip = VideoFileClip(temp_video_path)
-        fps = video_clip.fps
+        video = VideoFileClip(temp_video_path)
+        fps = video.fps
+        audio = video.audio
+        frames = list(video.iter_frames(fps=fps))
 
         # Limit video resolution and length
         max_resolution = (1280, 720)  # 720p resolution
         max_duration = 60  # 1 minute
 
-        if video_clip.size[0] > max_resolution[0] or video_clip.size[1] > max_resolution[1]:
+        if video.size[0] > max_resolution[0] or video.size[1] > max_resolution[1]:
             return jsonify({"error": "Video resolution exceeds the allowed limit. 😢"}), 400
 
-        if video_clip.duration > max_duration:
+        if video.duration > max_duration:
             return jsonify({"error": "Video duration exceeds the allowed limit. 😢"}), 400
 
-        # Calculate number of frames in the video
-        num_frames = int(video_clip.duration * fps)
-        print(f"Number of frames in the video: {num_frames}")
-
-        # Process each frame to remove background
-        def process_frame(frame):
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(frame_rgb)
-            output_image = remove(pil_image)
-            output_frame = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGBA2BGR)
-            return output_frame
-
-        batch_size = 5  # Adjust batch size based on memory constraints
         processed_frames = []
-        for i, frame in enumerate(video_clip.iter_frames()):
-            try:
-                processed_frame = process_frame(frame)
-                processed_frames.append(processed_frame)
-            except Exception as e:
-                print(f"Warning: Skipping frame due to error: {e}")
-                processed_frames.append(frame)
 
-            # Process and release frames in batches
-            if (i + 1) % batch_size == 0 or (i + 1) == num_frames:
-                # Create a new video clip with the processed frames
-                output_clip = ImageSequenceClip(processed_frames, fps=fps)
+        if bg_type == "Video":
+            background_video = VideoFileClip(bg_video)
+            if background_video.duration < video.duration:
+                background_video = background_video.fx(vfx.speedx, factor=video.duration / background_video.duration)
+            background_frames = list(background_video.iter_frames(fps=fps))
+        else:
+            background_frames = None
+        
+        bg_frame_index = 0  # Initialize background frame index
+        
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            # Pass bg_frame_index as part of the function arguments
+            futures = [executor.submit(process_frame, frames[i], bg_type, bg_image, bg_frame_index + i, background_frames, bg_color) for i in range(len(frames))] 
+            for i, future in enumerate(futures):
+                result, _ = future.result() #  No need to update bg_frame_index here
+                processed_frames.append(result)
+                elapsed_time = time.time() - start_time
+                yield result, None, f"Processing frame {i+1}/{len(frames)}... Elapsed time: {elapsed_time:.2f} seconds"
 
-                # Determine the codec based on the file extension
-                if file_extension == 'webm':
-                    codec = 'libvpx-vp9'
-                else:
-                    codec = 'libx264'
-
-                # Save the output video to a temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as temp_output_file:
-                    output_clip.write_videofile(temp_output_file.name, codec=codec, audio_codec='aac')
-                    temp_output_paths.append(temp_output_file.name)
-
-                # Clear processed frames to release memory
-                processed_frames.clear()
-
-        # Concatenate all the temporary video files
-        clips = [VideoFileClip(path) for path in temp_output_paths]
-        final_clip = concatenate_videoclips(clips)
+        processed_video = ImageSequenceClip(processed_frames, fps=fps)
+        processed_video.audio = processed_video.set_audio(audio)
+       
 
         # Save the final output video to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}') as final_output_file:
-            final_clip.write_videofile(final_output_file.name, codec=codec, audio_codec='aac')
-            final_output_path = final_output_file.name
-
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.mp4') as temp_file:
+            temp_filepath = temp_file.name
+            processed_video.write_videofile(temp_filepath, codec="libx264")
+        
+        elapsed_time = time.time() - start_time
         # Read the final output video into a BytesIO object
         output_video_file = io.BytesIO()
-        with open(final_output_path, 'rb') as f:
-            output_video_file.write(f.read())
-        output_video_file.seek(0)
-
-        # Remove the temporary files
-        if video_clip.reader:
-            video_clip.reader.close()
-        if video_clip.audio and video_clip.audio.reader:
-            video_clip.audio.reader.close()
-        try:
-            os.remove(temp_video_path)
-        except PermissionError:
-            print(f"PermissionError: Could not remove {temp_video_path}")
-            
-        for path in temp_output_paths:
-            clip = VideoFileClip(path)
-            if clip.reader:
-                clip.reader.close()
-            if clip.audio and clip.audio.reader:
-                clip.audio.reader.close()
-            clip.close()
-            try:
-                os.remove(path)
-            except PermissionError:
-                print(f"PermissionError: Could not remove {path}")
-        try:
-            os.remove(final_output_path)
-        except PermissionError:
-            print(f"PermissionError: Could not remove {final_output_path}")
-
         # Encode the output video to base64
         output_video_base64 = base64.b64encode(output_video_file.read()).decode('utf-8')
-
         # Return the base64 encoded video
-        return jsonify({"video": output_video_base64}), 200
+        return jsonify({"video": "data:video/mp4;base64," + output_video_base64, elapsed_time: elapsed_time})
     except Exception as e:
         print("Error:", str(e))
         return jsonify({"error": "Failed to process video. 😢"}), 500
-    finally:
-        # Ensure temporary files are removed in case of an error
-        if temp_video_path and os.path.exists(temp_video_path):
-            try:
-                if video_clip.reader:
-                    video_clip.reader.close()
-                if video_clip.audio and video_clip.audio.reader:
-                    video_clip.audio.reader.close()
-            except Exception as e:
-                print(f"Error closing video clip: {e}")
-            try:
-                os.remove(temp_video_path)
-            except PermissionError:
-                print(f"PermissionError: Could not remove {temp_video_path}")
-        for path in temp_output_paths:
-            if os.path.exists(path):
-                try:
-                    clip = VideoFileClip(path)
-                    if clip.reader:
-                        clip.reader.close()
-                    if clip.audio and clip.audio.reader:
-                        clip.audio.reader.close()
-                    clip.close()
-                except Exception as e:
-                    print(f"Error closing clip: {e}")
-                try:
-                    os.remove(path)
-                except PermissionError:
-                    print(f"PermissionError: Could not remove {path}")
 
+def process_video_frame(image, bg=None, fast_mode=True):
+    image_size = image.size
+    input_images = transform_image(image).unsqueeze(0).to(device)
+    model = birefnet_lite if fast_mode else birefnet
+    
+    with torch.no_grad():
+        preds = model(input_images)[-1].sigmoid().cpu()
+    pred = preds[0].squeeze()
+    pred_pil = transforms.ToPILImage()(pred)
+    mask = pred_pil.resize(image_size)
+    
+    if isinstance(bg, str) and bg.startswith("#"):
+        color_rgba = hex_to_rgba(bg)
+        background = Image.new("RGBA", image_size, color_rgba)
+    elif isinstance(bg, Image.Image):
+        background = bg.convert("RGBA").resize(image_size)
+    else:
+        background = Image.open(bg).convert("RGBA").resize(image_size)
+    
+    image = Image.composite(image, background, mask)
+    return image
 
 # Endpoint to remove background from an image
 @app.route("/remove-bg", methods=["POST"])
 def remove_bg():
 
     try:
+        start_time = time.time()
         data = request.get_json()
         image_data = base64.b64decode(data["image"])
         input_image = Image.open(io.BytesIO(image_data))
@@ -250,7 +243,7 @@ def remove_bg():
             for frame in ImageSequence.Iterator(input_image):
                 frame = frame.convert("RGBA")
                 try:
-                    output_frame = remove(frame)
+                    output_frame = process_image(frame)
                 except ZeroDivisionError:
                     return (
                         jsonify(
@@ -278,7 +271,7 @@ def remove_bg():
             return jsonify({"image": output_image_base64})
         else:
             try:
-                output_image = remove(input_image)
+                output_image = process_image(input_image)
             except ZeroDivisionError:
                 return (
                     jsonify(
@@ -293,11 +286,28 @@ def remove_bg():
                 buffered, format="PNG", optimize=True, icc_profile=color_profile
             )  # Preserve color profile
             output_image_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            print("Time taken:", time.time() - start_time) # in seconds
             return jsonify({"image": output_image_base64})
     except Exception as e:
         print("Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
+def process_image(image, fast_mode=True):
+    image_size = image.size
+    input_images = transform_image(image).unsqueeze(0).to(device)
+    
+    # Use the lite model if fast_mode is enabled
+    model = birefnet_lite if fast_mode else birefnet
+
+    # Prediction with mixed precision
+    with torch.no_grad():
+        preds = model(input_images)[-1].sigmoid().cpu()
+    
+    pred = preds[0].squeeze()
+    pred_pil = transforms.ToPILImage()(pred)
+    mask = pred_pil.resize(image_size)
+    image.putalpha(mask)
+    return image
 
 # Endpoint to apply background to an image
 @app.route("/apply-bg", methods=["POST"])

@@ -1,10 +1,10 @@
 # BackChanger
 
-BackChanger is a Flask-based web application that provides endpoints to remove the background from images and apply a new background. It supports both static images and animated GIFs.
+BackChanger is a Flask-based web application that provides endpoints to remove the background from images and videos, and apply a new background. It supports both static images and animated GIFs.
 
 ## Features
 
-- Remove background from images.
+- Remove background from images and videos.
 - Apply a new background to images.
 - Supports both static images and animated GIFs.
 - Accepts background as either a hex color or a base64-encoded image.
@@ -22,7 +22,7 @@ BackChanger is a Flask-based web application that provides endpoints to remove t
 1. Clone the repository:
 
     ```sh
-    git clone https://github.com/yourusername/BackChanger.git
+    git clone https://github.com/Walidadebayo/BackChanger.git
     cd BackChanger
     ```
 
@@ -76,6 +76,26 @@ Removes the background from an image.
   }
   ```
 
+### `POST /remove-bg-video`
+
+Removes the background from a video.
+
+- **Request Body**: JSON object with a base64-encoded video.
+  
+  ```json
+  {
+    "video": "base64-encoded-video-string"
+  }
+  ```
+
+- **Response**: JSON object with the base64-encoded video with the background removed.
+  
+  ```json
+  {
+    "video": "base64-encoded-video-string"
+  }
+  ```
+
 ### `POST /apply-bg`
 
 Applies a new background to an image.
@@ -99,13 +119,19 @@ Applies a new background to an image.
 
 ## Example
 
-### Remove Background
+### Remove Background from Image
 
 ```sh
 curl -X POST http://127.0.0.1:5000/remove-bg -H "Content-Type: application/json" -d '{"image": "base64-encoded-image-string"}'
 ```
 
-### Apply Background
+### Remove Background from Video
+
+```sh
+curl -X POST http://127.0.0.1:5000/remove-bg-video -H "Content-Type: application/json" -d '{"video": "base64-encoded-video-string"}'
+```
+
+### Apply Background to Image or GIF
 
 ```sh
 curl -X POST http://127.0.0.1:5000/apply-bg -H "Content-Type: application/json" -d '{"image": "base64-encoded-image-string", "background": "#1f7bd0"}'

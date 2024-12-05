@@ -1,7 +1,12 @@
 Flask
-rembg
 Pillow>=9.2.0
 flask-cors
-moviepy
+moviepy==1.0.3
 onnxruntime
+transformers
+torch
+torchvision
+kornia
+timm
+rembg
 gunicorn
